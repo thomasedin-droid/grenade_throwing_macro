@@ -1,0 +1,257 @@
+// Twilight 2000 4E - Granade pitch Macro
+// Throw a grenade and make the skill check and then apply the damage to the characters in the area
+
+(async () => {
+  // Check if the thrower character is selected
+  if (canvas.tokens.controlled.length === 0) {
+    ui.notifications.warn("Välj din token först!");
+    return;
+  }
+  
+  const thrower = canvas.tokens.controlled[0];
+  const actor = thrower.actor;
+  
+  // Asking if the character has the Pitcher speciality. This is because i could not find a good way to check that through the macro
+  const hasPitcher = await Dialog.confirm({
+    title: "Pitcher Specialitet",
+    content: `<p>Har <strong>${actor.name}</strong> specialiteten <strong>Pitcher</strong>?</p>`,
+    yes: () => true,
+    no: () => false
+  });
+  
+  const pitcherBonus = hasPitcher ? 1 : 0;
+  
+  // Ask the player to mark the target hex
+  ui.notifications.info("Klicka var du vill kasta granaten");
+  
+  const targetPoint = await new Promise((resolve) => {
+    const handler = (event) => {
+      const point = event.data.getLocalPosition(canvas.app.stage);
+      canvas.app.stage.off("pointerdown", handler);
+      resolve(point);
+    };
+    canvas.app.stage.on("pointerdown", handler);
+  });
+  
+  // Get the attribute and skill values
+  const aglDie = actor.system.attributes.agl.value || 0; // 6, 8, 10, 12
+  const mobDie = actor.system.skills.mobility.value || 0; // 6, 8, 10, 12
+  
+  console.log("Agility die:", aglDie);
+  console.log("Mobility die:", mobDie);
+  
+  // function to count successes
+  function countSuccesses(roll) {
+    if (roll >= 10) return 2;
+    if (roll >= 6) return 1;
+    return 0;
+  }
+  
+  // Roll the dies
+  let totalSuccesses = 0;
+  let rollResults = [];
+  
+  // Rulla Agility
+  if (aglDie.count > 0) {
+    const roll = Math.floor(Math.random() * aglDie.die) + 1;
+    rollResults.push({ name: `Agility (d${aglDie.die})`, roll: roll });
+    totalSuccesses += countSuccesses(roll);
+  }
+  
+  // Rulla Mobility
+  if (mobDie.count > 0) {
+    const roll = Math.floor(Math.random() * mobDie.die) + 1;
+    rollResults.push({ name: `Mobility (d${mobDie.die})`, roll: roll });
+    totalSuccesses += countSuccesses(roll);
+  }
+  
+  // Create chat message
+  let rollMessage = `<h3>🎯 Grenade pitcher - ${actor.name}</h3>`;
+  rollMessage += `<p><strong>Skill:</strong> Agility (${aglScore}) + Mobility (${mobValue})`;
+  if (pitcherBonus > 0) rollMessage += ` + Pitcher (+${pitcherBonus})`;
+  rollMessage += `</p>`;
+  rollMessage += `<p><strong>Dice's:</strong></p><ul>`;
+  
+  for (let result of rollResults) {
+    const successText = result.roll >= 10 ? " (2 successes)" : result.roll >= 6 ? " (1 success)" : "";
+    rollMessage += `<li>${result.name}: <strong>${result.roll}</strong>${successText}</li>`;
+  }
+  
+  rollMessage += `</ul>`;
+  rollMessage += `<p><strong>Totalt: ${totalSuccesses} success${totalSuccesses !== 1 ? 'es' : ''}</strong></p>`;
+  
+  // Decide landig area
+  let finalX = targetPoint.x;
+  let finalY = targetPoint.y;
+  const gridSize = canvas.grid.size;
+  const gridDistance = canvas.scene.grid.distance;
+  
+  if (totalSuccesses === 0) {
+    // Failed skill check - scatter
+    const directionRoll = Math.floor(Math.random() * 6) + 1;
+    const distanceRoll = Math.floor(Math.random() * 6) + 1;
+    
+    // Directions: 1=N, 2=NE, 3=SE, 4=S, 5=SW, 6=NW
+    const directions = {
+      1: { name: "N", angle: -90 },
+      2: { name: "NE", angle: -45 },
+      3: { name: "SE", angle: 45 },
+      4: { name: "S", angle: 90 },
+      5: { name: "SW", angle: 135 },
+      6: { name: "NW", angle: -135 }
+    };
+    
+    const scatterDir = directions[directionRoll];
+    const scatterDist = distanceRoll; // meter
+    
+    // Convert to pixels
+    const scatterPixels = (scatterDist / gridDistance) * gridSize;
+    const angleRad = scatterDir.angle * (Math.PI / 180);
+    
+    finalX = targetPoint.x + Math.cos(angleRad) * scatterPixels;
+    finalY = targetPoint.y + Math.sin(angleRad) * scatterPixels;
+    
+    rollMessage += `<p style="color: #ff6666;"><strong>❌ Misslyckades!</strong><br>Scatter: ${scatterDist}m åt ${scatterDir.name} (${directionRoll} riktning, ${distanceRoll} avstånd)</p>`;
+  } else {
+    rollMessage += `<p style="color: #66ff66;"><strong>✓ Träff!</strong> The grenade lands on the target point.</p>`;
+  }
+  
+  ChatMessage.create({
+    content: rollMessage,
+    speaker: ChatMessage.getSpeaker({token: thrower})
+  });
+  
+  // Create explosion at final position
+  const zones = [
+    { distance: 10, color: "#ff0000", label: "B" },
+    { distance: 20, color: "#ff8800", label: "C" },
+    { distance: 30, color: "#ffff00", label: "D" }
+  ];
+  
+  // Function to determine T2K4 damage
+  function rollT2KDamage(zone) {
+    const damages = {
+      "B": { dice: 10, count: 2, bonus: 3 },
+      "C": { dice: 8, count: 2, bonus: 2 },
+      "D": { dice: 6, count: 2, bonus: 1 }
+    };
+    
+    const dmg = damages[zone];
+    let totalDamage = dmg.bonus;
+    let rolls = [];
+    
+    for (let i = 0; i < dmg.count; i++) {
+      const roll = Math.floor(Math.random() * dmg.dice) + 1;
+      rolls.push(roll);
+      if (roll >= 6) {
+        totalDamage += 1;
+      }
+    }
+    
+    return {
+      total: totalDamage,
+      rolls: rolls
+    };
+  }
+  
+  // Create templates
+  const templates = [];
+  for (let zone of zones) {
+    const distanceInGridUnits = zone.distance / gridDistance;
+    const distanceInPixels = distanceInGridUnits * gridSize;
+    
+    const templateData = {
+      t: "circle",
+      user: game.user.id,
+      x: finalX,
+      y: finalY,
+      distance: distanceInPixels / canvas.dimensions.distance,
+      borderColor: zone.color,
+      fillColor: zone.color,
+      texture: null,
+      hidden: false
+    };
+    
+    const template = await canvas.scene.createEmbeddedDocuments("MeasuredTemplate", [templateData]);
+    templates.push(template[0]);
+  }
+  
+  // Find hit tokens
+  const allTokens = canvas.tokens.placeables;
+  const hitTokens = [];
+  
+  for (let token of allTokens) {
+    const distancePixels = Math.sqrt(
+      Math.pow(token.center.x - finalX, 2) + 
+      Math.pow(token.center.y - finalY, 2)
+    );
+    
+    const distanceMeters = (distancePixels / gridSize) * gridDistance;
+    
+    if (distanceMeters > 30) continue;
+    
+    let damageZone = "D";
+    if (distanceMeters <= 10) damageZone = "B";
+    else if (distanceMeters <= 20) damageZone = "C";
+    
+    const damageRoll = rollT2KDamage(damageZone);
+    
+    hitTokens.push({
+      token: token,
+      distance: Math.round(distanceMeters),
+      zone: damageZone,
+      damage: damageRoll
+    });
+    
+    if (token.actor) {
+      try {
+        const currentHP = token.actor.system.health.value || 0;
+        const newHP = Math.max(0, currentHP - damageRoll.total);
+        await token.actor.update({"system.health.value": newHP});
+      } catch (err) {
+        console.log(`Couldn't apply damage to ${token.name}:`, err);
+      }
+    }
+  }
+  
+  // Create damage report
+  if (hitTokens.length > 0) {
+    let damageMessage = `<h3>💣 Grenad explosion</h3><table style="border: 1px solid #999; width: 100%;">
+      <tr style="background: #333;">
+        <th style="padding: 5px;">Target</th>
+        <th style="padding: 5px;">Distance</th>
+        <th style="padding: 5px;">Zone</th>
+        <th style="padding: 5px;">Dice's</th>
+        <th style="padding: 5px;">Damage</th>
+      </tr>`;
+    
+    for (let hit of hitTokens) {
+      const colorMap = { "B": "#ff0000", "C": "#ff8800", "D": "#ffff00" };
+      const rollsText = hit.damage.rolls.map(r => r >= 6 ? `<strong>${r}</strong>` : r).join(", ");
+      
+      damageMessage += `<tr>
+        <td style="padding: 5px;">${hit.token.name}</td>
+        <td style="padding: 5px;">${hit.distance}m</td>
+        <td style="padding: 5px; background: ${colorMap[hit.zone]}; font-weight: bold;">${hit.zone}</td>
+        <td style="padding: 5px;">[${rollsText}]</td>
+        <td style="padding: 5px; font-weight: bold;">${hit.damage.total}</td>
+      </tr>`;
+    }
+    
+    damageMessage += `</table>`;
+    
+    ChatMessage.create({
+      content: damageMessage,
+      speaker: ChatMessage.getSpeaker(),
+      whisper: game.users.filter(u => u.isGM).map(u => u.id)
+    });
+  }
+  
+  // Remove templates after 10 seconds
+  setTimeout(async () => {
+    for (let t of templates) {
+      await t.delete();
+    }
+  }, 10000);
+  
+})();
